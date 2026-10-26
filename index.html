@@ -91,22 +91,35 @@
 <section id="t-scan" class="tela">
   <div class="top"><button class="sair" id="btn-sair">sair</button><b id="ola">Olá</b><small id="resumo">—</small></div>
   <div class="cam">
-    <p>Aponte para o código de barras do DACTE, deixando ele dentro da moldura</p>
+    <p>Aponte para o código de barras do documento (DACTE ou SSW), dentro da moldura</p>
     <div id="reader"></div>
     <div id="diag" style="color:#9ca3af;font-size:11px;margin-top:-6px"></div>
     <div id="scan-erro" class="erro" style="width:100%;max-width:420px"></div>
     <div class="ferr">
-      <button class="pill" id="btn-lanterna">🔦 Lanterna</button>
       <button class="pill" id="btn-trocar" style="display:none">🔄 Trocar câmera</button>
-      <button class="pill" id="btn-foto">📷 Usar foto</button>
-      <button class="pill" id="btn-digitar">⌨ Digitar chave</button>
+      <button class="pill" id="btn-digitar">⌨ Digitar CTRC</button>
     </div>
     <div id="leitor-oculto" style="display:none"></div>
-    <input type="file" id="arq-foto" accept="image/*" capture="environment" style="display:none">
     <div class="manual" id="manual">
-      <input id="chave-manual" class="inp" inputmode="numeric" maxlength="54" placeholder="Digite os 44 números da chave">
+      <input id="chave-manual" class="inp" maxlength="14" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="CTRC (ex.: SAO183849-1)">
       <button class="btn" id="btn-usar-chave">Continuar</button>
     </div>
+  </div>
+</section>
+
+<!-- ============ TELA: LOCALIZAÇÃO OBRIGATÓRIA ============ -->
+<section id="t-gps" class="tela">
+  <div class="corpo" style="text-align:center">
+    <div class="logo"><svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#b91c1c" stroke-width="2"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg></div>
+    <div style="font-size:20px;font-weight:700">Localização obrigatória</div>
+    <div style="font-size:14px;color:#374151;line-height:1.45;margin:6px 0 4px">
+      Para registrar baixas, o app usa a <b>localização atual e precisa</b> do celular no momento de cada baixa.
+      Ela é capturada automaticamente pelo GPS e não pode ser alterada.
+    </div>
+    <div style="font-size:13px;color:#6b7280;line-height:1.4">Quando o celular perguntar, toque em <b>Permitir</b> e escolha <b>Localização precisa</b>.</div>
+    <div id="gps-msg" class="erro" style="text-align:left"></div>
+    <div style="flex:1;min-height:24px"></div>
+    <button class="btn" id="btn-gps">Concordo e permitir localização</button>
   </div>
 </section>
 
@@ -136,7 +149,7 @@
     <div class="big" id="fim-icone"></div>
     <div class="c" style="font-size:22px;font-weight:700" id="fim-titulo">Baixa enviada!</div>
     <div class="muted" style="font-size:14px;margin-bottom:10px" id="fim-sub"></div>
-    <div class="card"><div class="k">CT-e</div><div class="v" id="fim-cte"></div></div>
+    <div class="card"><div class="k">Documento</div><div class="v" id="fim-cte"></div></div>
     <div class="card"><div class="k">Ocorrência</div><div class="v" id="fim-oco"></div></div>
     <div class="card"><div class="k">Status</div><div class="v" id="fim-status"></div></div>
     <div style="flex:1;min-height:20px"></div>
@@ -158,8 +171,8 @@ let token = ls.get(K.TOKEN, null);
 let ocorrencias = ls.get(K.OCO, []);
 let cteAtual = null;          // dados da chave lida
 let ocoSelecionada = null;
-let gpsAtual = null;
-let scanner = null, scannerRodando = false, lanterna = false;
+
+let scanner = null, scannerRodando = false;
 let enviadasHoje = 0;
 
 const $ = (id) => document.getElementById(id);
@@ -193,19 +206,29 @@ function mostrar(id) {
   window.scrollTo(0, 0);
   if (id === 't-scan') iniciarCamera(); else pararCamera();
 }
-function carregando(on) { $('carregando').style.display = on ? 'flex' : 'none'; }
+function carregando(on, txt) { $('carregando').textContent = txt || 'Aguarde…'; $('carregando').style.display = on ? 'flex' : 'none'; }
 function erro(id, msg) { const el = $(id); el.textContent = msg || ''; el.style.display = msg ? 'block' : 'none'; }
 
 /* ===================== VALIDAÇÃO DA CHAVE (igual ao servidor) ===================== */
 const UFS = ['11','12','13','14','15','16','17','21','22','23','24','25','26','27','28','29','31','32','33','35','41','42','43','50','51','52','53'];
+// Aceita dois tipos de código:
+//  - chave de acesso do CT-e (44 números), do DACTE ou do QR Code;
+//  - código de barras próprio do SSW (ex.: SUBCONTRATO/minuta), como 8223190030658767.
 function extrairChave(lido) {
-  const m = String(lido).match(/chCTe=(\d{44})/i);
+  const t = String(lido || '').trim();
+  const m = t.match(/chCTe=(\d{44})/i);
   if (m) return m[1];
-  const n = String(lido).replace(/\D/g, '');
-  return n.length === 44 ? n : null;
+  const n = t.replace(/\D/g, '');
+  if (n.length === 44) return n;
+  if (/^[0-9A-Za-z]{6,30}$/.test(t)) return t.toUpperCase();
+  return null;
 }
 function validarChave(ch) {
-  if (!/^\d{44}$/.test(ch)) return { ok: false, erro: 'A chave deve ter 44 dígitos.' };
+  ch = String(ch || '').trim().toUpperCase();
+  if (!/^\d{44}$/.test(ch)) {
+    if (/^[0-9A-Z]{6,30}$/.test(ch)) return { ok: true, tipo: 'ssw', chave: ch };
+    return { ok: false, erro: 'Código inválido. Leia de novo ou digite a chave do CT-e (44 números) ou o código SSW.' };
+  }
   let peso = 2, soma = 0;
   for (let i = 42; i >= 0; i--) { soma += Number(ch[i]) * peso; peso = peso === 9 ? 2 : peso + 1; }
   const resto = soma % 11, dv = resto < 2 ? 0 : 11 - resto;
@@ -214,7 +237,7 @@ function validarChave(ch) {
   const modelo = ch.slice(20, 22);
   if (modelo === '55') return { ok: false, erro: 'Este código é de uma NF-e (DANFE). Leia o código do DACTE.' };
   if (modelo !== '57' && modelo !== '67') return { ok: false, erro: 'Este código não é de um CT-e.' };
-  return { ok: true, chave: ch, serie: Number(ch.slice(22, 25)), numero: ch.slice(25, 34), mes: ch.slice(4, 6) + '/20' + ch.slice(2, 4) };
+  return { ok: true, tipo: 'cte', chave: ch, serie: Number(ch.slice(22, 25)), numero: ch.slice(25, 34), mes: ch.slice(4, 6) + '/20' + ch.slice(2, 4) };
 }
 
 /* ===================== LOGIN ===================== */
@@ -234,7 +257,7 @@ $('btn-entrar').onclick = async () => {
     $('senha').value = '';
     await carregarOcorrencias();
     await atualizarResumo();
-    mostrar('t-scan');
+    if (await exigirLocalizacao()) mostrar('t-scan');
     sincronizar();
   } catch (e) {
     erro('login-erro', erroDeRede(e) ? 'Sem internet. O primeiro acesso precisa de conexão.' : e.message);
@@ -280,7 +303,7 @@ function pintarResumo() {
 
 /* ===================== LEITOR =====================
  * Câmera ao vivo: o motorista aponta e o app lê sozinho.
- * Plano B: "Usar foto" (lê o código numa foto, que é descartada) e "Digitar chave".
+ * Plano B: "Digitar CTRC".
  */
 // Leitor de imagens (usado na foto e como plano B da câmera ao vivo)
 function novoScanner() {
@@ -338,7 +361,7 @@ async function iniciarCamera() {
     scannerRodando = true; loopAtivo = true;
     lerQuadros();
   } catch (e) {
-    erro('scan-erro', 'Não foi possível abrir a câmera. Permita o acesso à câmera no navegador, ou use "Usar foto" / "Digitar chave".');
+    erro('scan-erro', 'Não foi possível abrir a câmera. Permita o acesso à câmera no navegador, ou use "Digitar CTRC".');
   }
 }
 
@@ -363,7 +386,7 @@ function mostrarDiagnostico() {
   } catch (e) {}
 }
 async function pararCamera() {
-  loopAtivo = false; scannerRodando = false; lanterna = false;
+  loopAtivo = false; scannerRodando = false;
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
 }
 $('btn-trocar').onclick = async () => {
@@ -404,7 +427,11 @@ let travado = false;
 function aoLer(texto) {
   if (travado) return;
   const chave = extrairChave(texto);
-  if (!chave) return;               // outro código qualquer: continua procurando
+  if (!chave) {                     // leu algum código, mas não é chave de CT-e: mostra para diagnóstico
+    const t = String(texto || '');
+    if (t) $('diag').textContent = 'Código lido (não é chave de CT-e): ' + t.slice(0, 60) + (t.length > 60 ? '…' : '') + ' [' + t.length + ' caract.]';
+    return;
+  }
   travado = true;
   processarChave(chave);
   setTimeout(() => travado = false, 1500);
@@ -415,82 +442,38 @@ function processarChave(chave) {
   if (navigator.vibrate) navigator.vibrate(90);
   abrirOcorrencia(v);
 }
-$('btn-lanterna').onclick = async () => {
-  try {
-    lanterna = !lanterna;
-    await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ torch: lanterna }] });
-  } catch (e) { lanterna = false; erro('scan-erro', 'Lanterna não disponível neste aparelho.'); }
-};
-
-// recorta (parte central), redimensiona e, se pedido, gira a foto — ajuda o leitor quando há
-// fundo escuro em volta do papel, fotos muito grandes ou código de lado
-function prepararImagem(bitmap, largura, girar, recorte) {
-  const r = recorte || 1;
-  const sw = bitmap.width * r, sh = bitmap.height * r, sx = (bitmap.width - sw) / 2, sy = (bitmap.height - sh) / 2;
-  const esc = Math.min(1, largura / Math.max(sw, sh));
-  const w = Math.round(sw * esc), h = Math.round(sh * esc);
-  const cv = document.createElement('canvas');
-  cv.width = girar ? h : w; cv.height = girar ? w : h;
-  const ctx = cv.getContext('2d');
-  if (girar) { ctx.translate(h, 0); ctx.rotate(Math.PI / 2); }
-  ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, w, h);
-  return new Promise(ok => cv.toBlob(b => ok(new File([b], 'foto.jpg', { type: 'image/jpeg' })), 'image/jpeg', 0.92));
+// CTRC digitado: 3 letras da unidade + número + hífen + dígito. Ex.: SAO183849-1
+function normalizarCtrc(t) {
+  const m = String(t || '').toUpperCase().replace(/\s/g, '').match(/^([A-Z]{3})(\d{1,9})-?(\d)$/);
+  return m ? m[1] + m[2] + '-' + m[3] : null;
 }
-
-async function lerCodigoDaFoto(arquivo) {
-  // 1) leitor nativo do Android (Chrome), rápido e lê em qualquer ângulo
-  if ('BarcodeDetector' in window) {
-    try {
-      const det = new BarcodeDetector({ formats: ['code_128', 'qr_code'] });
-      const bmp = await createImageBitmap(arquivo);
-      for (const c of await det.detect(bmp)) { const ch = extrairChave(c.rawValue); if (ch) return ch; }
-    } catch (e) {}
-  }
-  // 2) biblioteca de leitura, tentando a foto em tamanhos e posições diferentes
-  const bmp = await createImageBitmap(arquivo);
-  const tentativas = [
-    () => prepararImagem(bmp, 1600, false, 1),    // foto inteira
-    () => prepararImagem(bmp, 1600, false, 0.7),  // centro da foto
-    () => prepararImagem(bmp, 1600, false, 0.45), // só o miolo (código enquadrado de perto)
-    () => prepararImagem(bmp, 2400, false, 0.7),
-    () => prepararImagem(bmp, 1600, true, 0.7),   // foto tirada de lado
-    () => prepararImagem(bmp, 1600, true, 1),
-  ];
-  for (const t of tentativas) {
-    try { const ch = extrairChave(await novoScanner().scanFile(await t(), false)); if (ch) return ch; } catch (e) {}
-  }
-  return null;
-}
-
-$('btn-foto').onclick = async () => { erro('scan-erro'); await pararCamera(); $('arq-foto').click(); };
-$('arq-foto').onchange = async (e) => {
-  const f = e.target.files[0]; e.target.value = '';
-  if (!f) return iniciarCamera();
-  carregando(true);
-  try {
-    const chave = await lerCodigoDaFoto(f);
-    if (!chave) { erro('scan-erro', 'Não foi possível ler o código na foto. Tente de novo, mais perto e sem reflexo.'); iniciarCamera(); }
-    else { processarChave(chave); if (!$('t-oco').classList.contains('ativa')) iniciarCamera(); }
-  } finally { carregando(false); }
-};
-$('btn-digitar').onclick = () => { $('manual').style.display = 'flex'; $('chave-manual').focus(); };
+$('btn-digitar').onclick = () => { erro('scan-erro'); $('manual').style.display = 'flex'; $('chave-manual').focus(); };
+$('chave-manual').addEventListener('input', (e) => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''); });
+$('chave-manual').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btn-usar-chave').click(); });
 $('btn-usar-chave').onclick = () => {
-  const ch = $('chave-manual').value.replace(/\D/g, '');
+  const ctrc = normalizarCtrc($('chave-manual').value);
+  if (!ctrc) return erro('scan-erro', 'CTRC inválido. Digite no formato SAO183849-1 (3 letras, número, hífen e dígito).');
   $('chave-manual').value = '';
-  processarChave(ch);
+  if (navigator.vibrate) navigator.vibrate(90);
+  abrirOcorrencia({ ok: true, tipo: 'ctrc', chave: ctrc });
 };
 
 /* ===================== OCORRÊNCIA ===================== */
+function descreverDoc(v) {
+  return v.tipo === 'ssw' ? 'Doc. SSW ' + v.chave : v.tipo === 'ctrc' ? 'CTRC ' + v.chave : 'CT-e ' + v.numero + ' · Série ' + v.serie;
+}
 function abrirOcorrencia(v) {
-  cteAtual = v; ocoSelecionada = null; gpsAtual = null;
-  $('cte-titulo').textContent = 'CT-e ' + v.numero + ' · Série ' + v.serie;
-  $('cte-sub').innerHTML = 'Emissão ' + v.mes + ' · <span class="tag">chave válida</span>';
+  cteAtual = v; ocoSelecionada = null;
+  $('cte-titulo').textContent = descreverDoc(v);
+  $('cte-sub').innerHTML = v.tipo === 'ssw' ? 'Código de barras do SSW · <span class="tag">lido</span>'
+                        : v.tipo === 'ctrc' ? 'Digitado pelo motorista · <span class="tag">formato válido</span>'
+                                            : 'Emissão ' + v.mes + ' · <span class="tag">chave válida</span>';
   $('busca').value = ''; $('recebedor').value = '';
   erro('oco-erro'); $('dup-aviso').style.display = 'none';
   $('btn-enviar').disabled = true;
   pintarLista();
   mostrar('t-oco');
-  capturarGps();
+  gpsPromessa = obterLocalizacao(20000);   // já começa a buscar a posição atual (GPS) enquanto o motorista escolhe
   verificarDuplicidade(v.chave);
 }
 
@@ -519,13 +502,57 @@ $('busca').addEventListener('input', pintarLista);
 $('btn-limpar').onclick = () => { $('busca').value = ''; pintarLista(); $('busca').focus(); };
 $('btn-cancelar').onclick = () => mostrar('t-scan');
 
-function capturarGps() {
-  try {
-    navigator.geolocation.getCurrentPosition(
-      (p) => { gpsAtual = { lat: p.coords.latitude, lng: p.coords.longitude, precisao: Math.round(p.coords.accuracy) }; },
-      () => {}, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
-  } catch (e) {}
+/* ===================== LOCALIZAÇÃO (obrigatória e precisa) =====================
+ * A posição é pega automaticamente pelo GPS no momento da baixa. Não há escolha manual.
+ * Se o celular entregar localização "aproximada" (precisão pior que LIMITE_PRECISAO_M),
+ * a baixa não é enviada e o motorista é orientado a ativar a localização precisa.
+ */
+const LIMITE_PRECISAO_M = 1000;
+let gpsPromessa = null;
+function obterLocalizacao(maxMs) {
+  return new Promise((ok, falha) => {
+    if (!('geolocation' in navigator)) return falha({ code: 0 });
+    let melhor = null, fim = false, id = null;
+    const terminar = () => { if (fim) return; fim = true; if (id !== null) navigator.geolocation.clearWatch(id); melhor ? ok(melhor) : falha({ code: 3 }); };
+    id = navigator.geolocation.watchPosition((p) => {
+      const g = { lat: p.coords.latitude, lng: p.coords.longitude, precisao: Math.round(p.coords.accuracy) };
+      if (!melhor || g.precisao < melhor.precisao) melhor = g;
+      if (melhor.precisao <= 30) terminar();          // já está bom: não precisa esperar
+    }, (e) => { if (e.code === 1) { fim = true; navigator.geolocation.clearWatch(id); falha(e); } },
+    { enableHighAccuracy: true, maximumAge: 0, timeout: maxMs });
+    setTimeout(terminar, maxMs);
+  });
 }
+function textoAjudaGps(codigo) {
+  return codigo === 1
+    ? 'A localização foi bloqueada. Toque no cadeado ao lado do endereço (ou ⋮ > Configurações do site) > Localização > Permitir. No Android, confira também em Configurações > Localização se "Usar localização precisa" está ativado.'
+    : 'Não foi possível obter sua localização. Ative a Localização (GPS) do celular, de preferência ao ar livre, e tente de novo.';
+}
+async function exigirLocalizacao() {
+  // Mostra a tela de consentimento se a permissão ainda não foi dada
+  try {
+    const st = await navigator.permissions.query({ name: 'geolocation' });
+    if (st.state === 'granted') return true;
+    $('gps-msg').textContent = st.state === 'denied' ? textoAjudaGps(1) : '';
+    $('gps-msg').style.display = st.state === 'denied' ? 'block' : 'none';
+  } catch (e) {}
+  mostrar('t-gps');
+  return false;
+}
+$('btn-gps').onclick = async () => {
+  $('gps-msg').style.display = 'none';
+  carregando(true, 'Obtendo sua localização…');
+  try {
+    const g = await obterLocalizacao(20000);
+    if (g.precisao > LIMITE_PRECISAO_M) throw { code: 'aprox', precisao: g.precisao };
+    mostrar('t-scan');
+  } catch (e) {
+    $('gps-msg').textContent = e.code === 'aprox'
+      ? 'Sua localização está aproximada (±' + e.precisao + ' m). Ative "Usar localização precisa" nas configurações de localização do celular e permita localização precisa para este app.'
+      : textoAjudaGps(e.code);
+    $('gps-msg').style.display = 'block';
+  } finally { carregando(false); }
+};
 
 async function verificarDuplicidade(chave) {
   const local = fila().find(i => i.chave === chave);
@@ -546,17 +573,32 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID() :
 
 $('btn-enviar').onclick = async () => {
   if (!ocoSelecionada) return;
+  erro('oco-erro');
+  carregando(true, 'Obtendo sua localização…');
+  let gps;
+  try { gps = await (gpsPromessa || obterLocalizacao(20000)); }
+  catch (e) {
+    carregando(false); gpsPromessa = null;
+    if (e && e.code === 1) { $('gps-msg').textContent = textoAjudaGps(1); $('gps-msg').style.display = 'block'; mostrar('t-gps'); return; }
+    gpsPromessa = obterLocalizacao(20000);
+    return erro('oco-erro', textoAjudaGps(e && e.code) + ' A baixa não foi enviada.');
+  }
+  if (gps.precisao > LIMITE_PRECISAO_M) {
+    carregando(false); gpsPromessa = obterLocalizacao(20000);
+    return erro('oco-erro', 'Sua localização está aproximada (±' + gps.precisao + ' m). Ative "Usar localização precisa" no celular e toque em Enviar de novo. A baixa não foi enviada.');
+  }
   const item = {
     id: uuid(),
     chave: cteAtual.chave,
+    tipoCodigo: cteAtual.tipo,
     ocorrencia: ocoSelecionada.c,
     ocorrenciaDesc: ocoSelecionada.d,
     recebedor: $('recebedor').value.trim(),
     registradoEm: new Date().toISOString(),
-    lat: gpsAtual && gpsAtual.lat, lng: gpsAtual && gpsAtual.lng, precisao: gpsAtual && gpsAtual.precisao,
+    lat: gps.lat, lng: gps.lng, precisao: gps.precisao,
   };
   const f = fila(); f.push(item); salvarFila(f);    // 1º grava no aparelho
-  carregando(true);
+  carregando(true, 'Enviando…');
   const r = await enviarItem(item);                  // 2º tenta enviar
   carregando(false);
   mostrarFim(item, r);
@@ -605,10 +647,10 @@ function mostrarFim(item, r) {
            : '<svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="3"><path d="M6 6l12 12M18 6L6 18"/></svg>';
   $('fim-titulo').textContent = ok ? 'Baixa enviada!' : pend ? 'Salvo no aparelho' : 'Baixa não aceita';
   const hora = new Date(item.registradoEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  $('fim-sub').textContent = ok ? 'Registrada às ' + hora + (item.lat ? ' com localização' : '')
+  $('fim-sub').textContent = ok ? 'Registrada às ' + hora + ' com localização (±' + item.precisao + ' m)'
                          : pend ? 'Será enviado automaticamente quando houver internet'
                                 : item.erro;
-  $('fim-cte').textContent = cteAtual.numero + ' · Série ' + cteAtual.serie;
+  $('fim-cte').textContent = descreverDoc(cteAtual);
   $('fim-oco').textContent = item.ocorrencia + ' - ' + item.ocorrenciaDesc;
   $('fim-status').innerHTML = ok ? '<span class="ok" style="background:#dcfce7;color:#166534">ENVIADO</span> &nbsp;aguardando SSW'
                             : pend ? '<span class="ok" style="background:#fef3c7;color:#92400e">PENDENTE</span> &nbsp;na fila do aparelho'
@@ -623,7 +665,7 @@ $('btn-proximo').onclick = () => { pintarResumo(); mostrar('t-scan'); };
   if (!token) return mostrar('t-login');
   $('ola').textContent = 'Olá, ' + (ls.get(K.NOME, '').split(' ')[0] || 'motorista');
   pintarResumo();
-  mostrar('t-scan');
+  if (await exigirLocalizacao()) mostrar('t-scan');
   await carregarOcorrencias();
   if (token) { await atualizarResumo(); sincronizar(); }
 })();
