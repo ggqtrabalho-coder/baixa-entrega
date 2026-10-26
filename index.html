@@ -91,11 +91,13 @@
 <section id="t-scan" class="tela">
   <div class="top"><button class="sair" id="btn-sair">sair</button><b id="ola">Olá</b><small id="resumo">—</small></div>
   <div class="cam">
-    <p>Aponte a câmera para o código de barras do DACTE</p>
+    <p>Aponte para o código de barras do DACTE, deixando ele dentro da moldura</p>
     <div id="reader"></div>
+    <div id="diag" style="color:#9ca3af;font-size:11px;margin-top:-6px"></div>
     <div id="scan-erro" class="erro" style="width:100%;max-width:420px"></div>
     <div class="ferr">
       <button class="pill" id="btn-lanterna">🔦 Lanterna</button>
+      <button class="pill" id="btn-trocar" style="display:none">🔄 Trocar câmera</button>
       <button class="pill" id="btn-foto">📷 Usar foto</button>
       <button class="pill" id="btn-digitar">⌨ Digitar chave</button>
     </div>
@@ -292,16 +294,37 @@ function novoScanner() {
 }
 
 // Câmera ao vivo própria, na resolução cheia da câmera (o código do CT-e é longo e fino:
-// em baixa resolução ele não é lido).
+// em baixa resolução ele não é lido). Usa dois leitores juntos:
+//  - leitor nativo do Android (BarcodeDetector), quando o aparelho suporta CODE-128;
+//  - leitor ZXing (biblioteca), sempre, em recortes da área da mira.
 let stream = null, video = null, loopAtivo = false, detectorNativo = null;
-try { if ('BarcodeDetector' in window) detectorNativo = new BarcodeDetector({ formats: ['code_128', 'qr_code'] }); } catch (e) {}
+let cameras = [], cameraIdx = -1;
+async function prepararDetectorNativo() {
+  try {
+    if (!('BarcodeDetector' in window)) return;
+    const fmts = await BarcodeDetector.getSupportedFormats();
+    if (fmts.indexOf('code_128') >= 0) detectorNativo = new BarcodeDetector({ formats: ['code_128', 'qr_code'] });
+  } catch (e) { detectorNativo = null; }
+}
+const prontoNativo = prepararDetectorNativo();
+
+async function listarCamerasTraseiras() {
+  try {
+    const todas = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    const tras = todas.filter(d => /back|rear|traseira|environment/i.test(d.label));
+    cameras = tras.length ? tras : todas;
+  } catch (e) { cameras = []; }
+}
 
 async function iniciarCamera() {
   erro('scan-erro'); $('manual').style.display = 'none';
   if (scannerRodando) return;
+  await prontoNativo;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: false,
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+    const video_c = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+    if (cameraIdx >= 0 && cameras[cameraIdx]) video_c.deviceId = { exact: cameras[cameraIdx].deviceId };
+    else video_c.facingMode = { ideal: 'environment' };
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: video_c });
     if (!video) {
       video = document.createElement('video');
       video.setAttribute('playsinline', ''); video.muted = true;
@@ -309,38 +332,69 @@ async function iniciarCamera() {
       $('reader').innerHTML = '<div class="mira"></div>'; $('reader').prepend(video);
     }
     video.srcObject = stream; await video.play();
+    await ajustarFoco();
+    if (!cameras.length) { await listarCamerasTraseiras(); }
+    $('btn-trocar').style.display = cameras.length > 1 ? '' : 'none';
     scannerRodando = true; loopAtivo = true;
     lerQuadros();
   } catch (e) {
     erro('scan-erro', 'Não foi possível abrir a câmera. Permita o acesso à câmera no navegador, ou use "Usar foto" / "Digitar chave".');
   }
 }
+
+// foco contínuo e um pouco de zoom: o celular fica mais longe do papel e consegue focar o código
+async function ajustarFoco() {
+  try {
+    const track = stream.getVideoTracks()[0];
+    const cap = track.getCapabilities ? track.getCapabilities() : {};
+    const adv = {};
+    if (cap.focusMode && cap.focusMode.indexOf('continuous') >= 0) adv.focusMode = 'continuous';
+    if (cap.zoom) adv.zoom = Math.min(cap.zoom.max, Math.max(cap.zoom.min, 1.6));
+    if (Object.keys(adv).length) await track.applyConstraints({ advanced: [adv] });
+  } catch (e) {}
+  mostrarDiagnostico();
+}
+function mostrarDiagnostico() {
+  try {
+    const st = stream.getVideoTracks()[0].getSettings();
+    $('diag').textContent = (video.videoWidth || st.width) + '×' + (video.videoHeight || st.height) +
+      ' · leitor ' + (detectorNativo ? 'nativo + ZXing' : 'ZXing') + (st.zoom ? ' · zoom ' + st.zoom.toFixed(1) + 'x' : '') +
+      (cameras.length > 1 ? ' · câmera ' + (cameraIdx < 0 ? 'padrão' : (cameraIdx + 1) + '/' + cameras.length) : '');
+  } catch (e) {}
+}
 async function pararCamera() {
   loopAtivo = false; scannerRodando = false; lanterna = false;
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
 }
+$('btn-trocar').onclick = async () => {
+  if (!cameras.length) await listarCamerasTraseiras();
+  if (!cameras.length) return;
+  cameraIdx = (cameraIdx + 1) % cameras.length;
+  await pararCamera(); await espera(200); iniciarCamera();
+};
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
-const RECORTES = [[1, 0.5], [0.85, 0.35], [0.7, 0.25]];   // largura x altura, a partir do centro
+const RECORTES = [[0.9, 0.4], [1, 0.6], [0.75, 0.28]];   // largura x altura, a partir do centro (área da mira)
 let quadro = 0;
 async function lerQuadros() {
   const cv = document.createElement('canvas'), ctx = cv.getContext('2d', { willReadFrequently: true });
   while (loopAtivo) {
     if (video.readyState >= 2 && video.videoWidth) {
       try {
-        if (detectorNativo) {                         // Android/Chrome: leitor nativo, muito rápido
-          const achados = await detectorNativo.detect(video);
-          for (const c of achados) aoLer(c.rawValue);
-          await espera(80);
-        } else {                                      // plano B (ex.: iPhone): recortes da área da mira, em resolução cheia
-          const w = video.videoWidth, h = video.videoHeight;
-          const [rw, rh] = RECORTES[(quadro++) % RECORTES.length];
-          const cw = Math.round(w * rw), ch = Math.round(h * rh);
-          cv.width = cw; cv.height = ch;
-          ctx.drawImage(video, (w - cw) / 2, (h - ch) / 2, cw, ch, 0, 0, cw, ch);
-          const blob = await new Promise(ok => cv.toBlob(ok, 'image/jpeg', 0.9));
-          try { aoLer(await novoScanner().scanFile(new File([blob], 'q.jpg', { type: 'image/jpeg' }), false)); } catch (e) {}
-          await espera(150);
+        const w = video.videoWidth, h = video.videoHeight;
+        const [rw, rh] = RECORTES[(quadro++) % RECORTES.length];
+        const cw = Math.round(w * rw), ch = Math.round(h * rh);
+        cv.width = cw; cv.height = ch;
+        ctx.drawImage(video, (w - cw) / 2, (h - ch) / 2, cw, ch, 0, 0, cw, ch);
+        if (detectorNativo) {
+          try { for (const c of await detectorNativo.detect(cv)) aoLer(c.rawValue); } catch (e) {}
         }
+        if (!loopAtivo) break;
+        if (!detectorNativo || quadro % 2 === 0) {   // ZXing sempre roda (a cada 2 quadros quando há o nativo)
+          const blob = await new Promise(ok => cv.toBlob(ok, 'image/jpeg', 0.92));
+          try { aoLer(await novoScanner().scanFile(new File([blob], 'q.jpg', { type: 'image/jpeg' }), false)); } catch (e) {}
+        }
+        if (quadro === 5) mostrarDiagnostico();
+        await espera(60);
       } catch (e) { await espera(300); }
     } else { await espera(100); }
   }
